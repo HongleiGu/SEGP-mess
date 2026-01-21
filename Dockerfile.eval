@@ -1,0 +1,52 @@
+# --- STAGE 1: Build Shimmy ---
+FROM golang:1.24-alpine AS shimmy-builder
+WORKDIR /app
+RUN apk add --no-cache make git
+COPY ./shimmy/go.mod ./shimmy/go.sum ./
+RUN go mod download
+COPY ./shimmy .
+RUN CGO_ENABLED=0 go build -o /bin/shimmy .
+
+# --- STAGE 2: Install Python Dependencies ---
+FROM ghcr.io/lambda-feedback/evaluation-function-base/python:3.12 AS python-builder
+WORKDIR /app
+RUN pip install poetry==1.8.3
+RUN pip install pydantic
+# Copy dependency files from your evaluation-function-boilerplate-python folder
+COPY ./evaluation-function-boilerplate-python/pyproject.toml ./evaluation-function-boilerplate-python/poetry.lock* ./
+# Install to the system/image instead of a virtualenv for simplicity in Docker
+RUN poetry config virtualenvs.create false && \
+    poetry install --without dev --no-root
+
+# --- STAGE 3: Final Runtime ---
+FROM ghcr.io/lambda-feedback/evaluation-function-base/python:3.12
+WORKDIR /app
+
+# Copy Shimmy binary
+COPY --from=shimmy-builder /bin/shimmy /usr/local/bin/shimmy
+
+# Copy installed Python packages from builder
+COPY --from=python-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=python-builder /usr/local/bin /usr/local/bin
+
+# Copy your actual evaluation code
+COPY ./evaluation-function-boilerplate-python/evaluation_function ./evaluation_function
+
+# --- TIMEOUT CONFIGURATIONS ---
+# Increase the Uber/fx lifecycle timeout (Fixes "context deadline exceeded")
+ENV FX_START_TIMEOUT=60s
+
+# Increase Shimmy's internal worker communication timeouts
+ENV FUNCTION_WORKER_SEND_TIMEOUT=60s
+ENV FUNCTION_WORKER_STOP_TIMEOUT=30s
+
+# Configuration for Shimmy to talk to lf-toolkit
+ENV FUNCTION_COMMAND="python"
+ENV FUNCTION_ARGS="-m,evaluation_function.main"
+ENV FUNCTION_RPC_TRANSPORT="ipc"
+ENV PYTHONPATH="/app"
+
+# Ensure the socket directory is writable
+RUN chmod 777 /tmp
+
+ENTRYPOINT ["/usr/local/bin/shimmy"]

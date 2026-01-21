@@ -1,0 +1,12 @@
+services:
+  evaluator:
+    build:
+      context: .
+      dockerfile: Dockerfile.eval
+    ports:
+      - "8080:8080"
+    environment:
+      - LOG_LEVEL=debug
+    stdin_open: true
+    tty: true
+    command: ["run"]
